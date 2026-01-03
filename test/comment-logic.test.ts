@@ -140,8 +140,7 @@ describe("updateCommentBody", () => {
     it("removes old branch links from body", () => {
       const input = {
         ...baseInput,
-        currentBody:
-          `Some comment with [View branch](${BRANCH_BASE_URL}/branch-name)` ,
+        currentBody: `Some comment with [View branch](${BRANCH_BASE_URL}/branch-name)`,
         branchName: "new-branch-name",
       };
 
@@ -270,7 +269,7 @@ describe("updateCommentBody", () => {
       const input = {
         ...baseInput,
         executionDetails: {
-          cost_usd: 0.13382595,
+          total_cost_usd: 0.13382595,
           duration_ms: 31033,
           duration_api_ms: 31034,
         },
@@ -313,7 +312,7 @@ describe("updateCommentBody", () => {
       const input = {
         ...baseInput,
         executionDetails: {
-          cost_usd: 0.25,
+          total_cost_usd: 0.25,
         },
         triggerUsername: "testuser",
       };
@@ -334,7 +333,7 @@ describe("updateCommentBody", () => {
         branchName: "claude-branch-123",
         prLink: "\n[Create a PR](https://gitea.example.com/owner/repo/pr-url)",
         executionDetails: {
-          cost_usd: 0.01,
+          total_cost_usd: 0.01,
           duration_ms: 65000, // 1 minute 5 seconds
         },
         triggerUsername: "trigger-user",

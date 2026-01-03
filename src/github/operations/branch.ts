@@ -6,12 +6,111 @@
  * - For Issues: Create a new branch
  */
 
-import { $ } from "bun";
+import { execFileSync } from "child_process";
 import * as core from "@actions/core";
 import type { ParsedGitHubContext } from "../context";
 import type { GitHubPullRequest } from "../types";
 import type { GitHubClient } from "../api/client";
 import type { FetchDataResult } from "../data/fetcher";
+
+/**
+ * Validates a git branch name against a strict whitelist pattern.
+ * This prevents command injection by ensuring only safe characters are used.
+ *
+ * Valid branch names:
+ * - Start with alphanumeric character (not dash, to prevent option injection)
+ * - Contain only alphanumeric, forward slash, hyphen, underscore, or period
+ * - Do not start or end with a period
+ * - Do not end with a slash
+ * - Do not contain '..' (path traversal)
+ * - Do not contain '//' (consecutive slashes)
+ * - Do not end with '.lock'
+ * - Do not contain '@{'
+ * - Do not contain control characters or special git characters (~^:?*[\])
+ */
+export function validateBranchName(branchName: string): void {
+  // Check for empty or whitespace-only names
+  if (!branchName || branchName.trim().length === 0) {
+    throw new Error("Branch name cannot be empty");
+  }
+
+  // Check for leading dash (prevents option injection like --help, -x)
+  if (branchName.startsWith("-")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot start with a dash.`,
+    );
+  }
+
+  // Check for control characters and special git characters (~^:?*[\])
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1F\x7F ~^:?*[\]\\]/.test(branchName)) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot contain control characters, spaces, or special git characters (~^:?*[\\]).`,
+    );
+  }
+
+  // Strict whitelist pattern: alphanumeric start, then alphanumeric/slash/hyphen/underscore/period
+  const validPattern = /^[a-zA-Z0-9][a-zA-Z0-9/_.-]*$/;
+
+  if (!validPattern.test(branchName)) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names must start with an alphanumeric character and contain only alphanumeric characters, forward slashes, hyphens, underscores, or periods.`,
+    );
+  }
+
+  // Check for leading/trailing periods
+  if (branchName.startsWith(".") || branchName.endsWith(".")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot start or end with a period.`,
+    );
+  }
+
+  // Check for trailing slash
+  if (branchName.endsWith("/")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot end with a slash.`,
+    );
+  }
+
+  // Check for consecutive slashes
+  if (branchName.includes("//")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot contain consecutive slashes.`,
+    );
+  }
+
+  // Additional git-specific validations
+  if (branchName.includes("..")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot contain '..'`,
+    );
+  }
+
+  if (branchName.endsWith(".lock")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot end with '.lock'`,
+    );
+  }
+
+  if (branchName.includes("@{")) {
+    throw new Error(
+      `Invalid branch name: "${branchName}". Branch names cannot contain '@{'`,
+    );
+  }
+}
+
+/**
+ * Executes a git command safely using execFileSync to avoid shell interpolation.
+ *
+ * Security: execFileSync passes arguments directly to the git binary without
+ * invoking a shell, preventing command injection attacks where malicious input
+ * could be interpreted as shell commands (e.g., branch names containing `;`, `|`, `&&`).
+ *
+ * @param args - Git command arguments (e.g., ["checkout", "branch-name"])
+ */
+function execGit(args: string[]): void {
+  execFileSync("git", args, { stdio: "inherit" });
+}
 
 export type BranchInfo = {
   baseBranch: string;
@@ -66,15 +165,27 @@ export async function setupBranch(
 
       const branchName = prData.headRefName;
 
-      // Execute git commands to checkout PR branch (shallow fetch for performance)
-      // Fetch the branch with a depth of 20 to avoid fetching too much history, while still allowing for some context
-      await $`git fetch origin --depth=20 ${branchName}`;
-      await $`git checkout ${branchName}`;
+      // Determine optimal fetch depth based on PR commit count, with a minimum of 20
+      const commitCount = prData.commits?.totalCount ?? 20;
+      const fetchDepth = Math.max(commitCount, 20);
+
+      console.log(
+        `PR #${entityNumber}: ${commitCount} commits, using fetch depth ${fetchDepth}`,
+      );
+
+      // Validate branch names before use to prevent command injection
+      validateBranchName(branchName);
+
+      // Execute git commands to checkout PR branch (dynamic depth based on PR size)
+      // Using execFileSync instead of shell template literals for security
+      execGit(["fetch", "origin", `--depth=${fetchDepth}`, branchName]);
+      execGit(["checkout", branchName, "--"]);
 
       console.log(`Successfully checked out PR branch for PR #${entityNumber}`);
 
       // For open PRs, we need to get the base branch of the PR
       const baseBranch = prData.baseRefName;
+      validateBranchName(baseBranch);
 
       return {
         baseBranch,
@@ -101,36 +212,25 @@ export async function setupBranch(
     console.log(`Fetching latest ${sourceBranch}...`);
     await $`git fetch origin --depth=1 ${sourceBranch}`;
 
-    // Checkout the source branch
-    console.log(`Checking out ${sourceBranch}...`);
-    await $`git checkout ${sourceBranch}`;
+    // Fetch and checkout the source branch
+    console.log(`Fetching and checking out source branch: ${sourceBranch}`);
+    validateBranchName(sourceBranch);
+    validateBranchName(newBranch);
+    execGit(["fetch", "origin", sourceBranch, "--depth=1"]);
+    execGit(["checkout", sourceBranch, "--"]);
 
-    // Pull latest changes
-    console.log(`Pulling latest changes for ${sourceBranch}...`);
-    await $`git pull origin ${sourceBranch}`;
+    // Create and checkout the new branch from the source branch
+    execGit(["checkout", "-b", newBranch]);
 
-    // Verify the branch was checked out
-    const currentBranch = await $`git branch --show-current`;
-    const branchName = currentBranch.text().trim();
-    console.log(`Current branch: ${branchName}`);
-
-    if (branchName === sourceBranch) {
-      console.log(`✅ Successfully checked out base branch: ${sourceBranch}`);
-    } else {
-      throw new Error(
-        `Branch checkout failed. Expected ${sourceBranch}, got ${branchName}`,
-      );
-    }
-
-    console.log(
-      `Branch setup completed, ready for Claude to create branches as needed`,
-    );
+    console.log(`Branch setup completed for ${entityType} #${entityNumber}`);
 
     // Set outputs for GitHub Actions
+    core.setOutput("CLAUDE_BRANCH", newBranch);
     core.setOutput("BASE_BRANCH", sourceBranch);
     return {
       baseBranch: sourceBranch,
-      currentBranch: sourceBranch,
+      claudeBranch: newBranch,
+      currentBranch: newBranch,
     };
   } catch (error) {
     console.error("Error setting up branch:", error);

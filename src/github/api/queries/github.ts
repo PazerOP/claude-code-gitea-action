@@ -13,6 +13,8 @@ export const PR_QUERY = `
         headRefName
         headRefOid
         createdAt
+        updatedAt
+        lastEditedAt
         additions
         deletions
         state
@@ -88,6 +90,8 @@ export const ISSUE_QUERY = `
           login
         }
         createdAt
+        updatedAt
+        lastEditedAt
         state
         comments(first: 100) {
           nodes {

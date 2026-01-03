@@ -293,5 +293,19 @@ describe("prepareRunConfig", () => {
       const prepared = prepareRunConfig("/tmp/test-prompt.txt", options);
       expect(prepared.env).toEqual({});
     });
+
+    test("should include json-schema flag when provided", () => {
+      const options: ClaudeOptions = {
+        claudeArgs:
+          '--json-schema \'{"type":"object","properties":{"result":{"type":"boolean"}}}\'',
+      };
+
+      const prepared = prepareRunConfig("/tmp/test-prompt.txt", options);
+
+      expect(prepared.claudeArgs).toContain("--json-schema");
+      expect(prepared.claudeArgs).toContain(
+        '{"type":"object","properties":{"result":{"type":"boolean"}}}',
+      );
+    });
   });
 });

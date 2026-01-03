@@ -20,8 +20,13 @@ import {
 import type { ParsedGitHubContext } from "../github/context";
 import type { CommonFields, PreparedContext, EventData } from "./types";
 import type { Mode, ModeContext } from "../modes/types";
+import { extractUserRequest } from "../utils/extract-user-request";
 export type { CommonFields, PreparedContext } from "./types";
 
+/** Filename for the user request file, read by the SDK runner */
+const USER_REQUEST_FILENAME = "claude-user-request.txt";
+
+// Tag mode defaults - these tools are needed for tag mode to function
 const BASE_ALLOWED_TOOLS = [
   "Edit",
   "MultiEdit",
@@ -120,7 +125,9 @@ export function buildDisallowedToolsString(
   // If user has explicitly allowed some hardcoded disallowed tools, remove them from disallowed list
   const allowedList = normalizeToolList(allowedTools);
   if (allowedList.length > 0) {
-    disallowedTools = disallowedTools.filter((tool) => !allowedList.includes(tool));
+    disallowedTools = disallowedTools.filter(
+      (tool) => !allowedList.includes(tool),
+    );
   }
 
   let allDisallowedTools = disallowedTools.join(",");
@@ -231,11 +238,6 @@ export function prepareContext(
       }
       if (!isPR) {
         throw new Error("IS_PR must be true for pull_request_review event");
-      }
-      if (!commentBody) {
-        throw new Error(
-          "COMMENT_BODY is required for pull_request_review event",
-        );
       }
       eventData = {
         eventName: "pull_request_review",
@@ -505,8 +507,18 @@ export function generatePrompt(
     );
   }
 
-  const triggerDisplayName = context.triggerUsername ?? "Unknown";
+  return generateDefaultPrompt(context, githubData, useCommitSigning);
+}
 
+/**
+ * Generates the default prompt for tag mode
+ * @internal
+ */
+export function generateDefaultPrompt(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+  useCommitSigning: boolean = false,
+): string {
   const {
     contextData,
     comments,
@@ -679,7 +691,13 @@ ${
         - Reference specific code sections with file paths and line numbers${eventData.isPR ? "\n      - AFTER reading files and analyzing code, you MUST call mcp__gitea__update_issue_comment to post your review" : ""}
       - Formulate a concise, technical, and helpful response based on the context.
       - Reference specific code with inline formatting or code blocks.
-      - Include relevant file paths and line numbers when applicable.
+      - Include relevant file paths and line numbers when applicable.${
+        eventData.isPR && context.githubContext?.inputs.includeFixLinks
+          ? `
+      - When identifying issues that could be fixed, include an inline link: [Fix this →](https://claude.ai/code?q=<URI_ENCODED_INSTRUCTIONS>&repo=${context.repository})
+        The query should be URI-encoded and include enough context for Claude Code to understand and fix the issue (file path, line numbers, branch name, what needs to change).`
+          : ""
+      }
       - ${eventData.isPR ? "IMPORTANT: Submit your review feedback by updating the Claude comment. This will be displayed as your PR review." : "Remember that this feedback must be posted to the Gitea comment."}
 
    B. For Straightforward Changes:
@@ -772,7 +790,7 @@ ${
 - Display the todo list as a checklist in the Gitea comment and mark things off as you go.
 - REPOSITORY SETUP INSTRUCTIONS: The repository's CLAUDE.md file(s) contain critical repo-specific setup instructions, development guidelines, and preferences. Always read and follow these files, particularly the root CLAUDE.md, as they provide essential context for working with the codebase effectively.
 - Use h3 headers (###) for section titles in your comments, not h1 headers (#).
-- Your comment must always include the job run link (and branch link if there is one) at the bottom.
+- Your comment must always include the job run link in the format "[View job run](${GITHUB_SERVER_URL}/${context.repository}/actions/runs/${process.env.GITHUB_RUN_ID})" at the bottom of your response (branch link if there is one should also be included there).
 
 CAPABILITIES AND LIMITATIONS:
 When users ask you to do something, be aware of what you can and cannot do. This section helps you understand how to respond when users request actions outside your scope.
@@ -799,7 +817,7 @@ What You CANNOT Do:
 - Post multiple comments (you only update your initial comment)
 - Execute commands outside the repository context
 
-When users ask you to perform actions you cannot do, politely explain the limitation and, when applicable, direct them to the FAQ for more information and workarounds:
+When users ask you to perform actions you cannot do, politely explain the limitation and, when applicable, direct them to the documentation for more information and workarounds:
 "I'm unable to [specific action] due to [reason]. Please check the documentation for more information and potential workarounds."
 
 If a user asks for something outside these capabilities (and you have no other tools provided), politely explain that you cannot perform that action and suggest an alternative approach if possible.
@@ -818,6 +836,55 @@ f. If you are unable to complete certain steps, such as running a linter or test
   }
 
   return promptContent;
+}
+
+/**
+ * Extracts the user's request from the prepared context and GitHub data.
+ *
+ * This is used to send the user's actual command/request as a separate
+ * content block, enabling slash command processing in the CLI.
+ *
+ * @param context - The prepared context containing event data and trigger phrase
+ * @param githubData - The fetched GitHub data containing issue/PR body content
+ * @returns The extracted user request text (e.g., "/review-pr" or "fix this bug"),
+ *          or null for assigned/labeled events without an explicit trigger in the body
+ *
+ * @example
+ * // Comment event: "@claude /review-pr" -> returns "/review-pr"
+ * // Issue body with "@claude fix this" -> returns "fix this"
+ * // Issue assigned without @claude in body -> returns null
+ */
+function extractUserRequestFromContext(
+  context: PreparedContext,
+  githubData: FetchDataResult,
+): string | null {
+  const { eventData, triggerPhrase } = context;
+
+  // For comment events, extract from comment body
+  if (
+    "commentBody" in eventData &&
+    eventData.commentBody &&
+    (eventData.eventName === "issue_comment" ||
+      eventData.eventName === "pull_request_review_comment" ||
+      eventData.eventName === "pull_request_review")
+  ) {
+    return extractUserRequest(eventData.commentBody, triggerPhrase);
+  }
+
+  // For issue/PR events triggered by body content, extract from the body
+  if (githubData.contextData?.body) {
+    const request = extractUserRequest(
+      githubData.contextData.body,
+      triggerPhrase,
+    );
+    if (request) {
+      return request;
+    }
+  }
+
+  // For assigned/labeled events without explicit trigger in body,
+  // return null to indicate the full context should be used
+  return null;
 }
 
 export async function createPrompt(
@@ -861,6 +928,22 @@ export async function createPrompt(
       `${process.env.RUNNER_TEMP}/claude-prompts/claude-prompt.txt`,
       promptContent,
     );
+
+    // Extract and write the user request separately for SDK multi-block messaging
+    // This allows the CLI to process slash commands (e.g., "@claude /review-pr")
+    const userRequest = extractUserRequestFromContext(
+      preparedContext,
+      githubData,
+    );
+    if (userRequest) {
+      await writeFile(
+        `${process.env.RUNNER_TEMP || "/tmp"}/claude-prompts/${USER_REQUEST_FILENAME}`,
+        userRequest,
+      );
+      console.log("===== USER REQUEST =====");
+      console.log(userRequest);
+      console.log("========================");
+    }
 
     // Set allowed tools
     const hasActionsReadPermission =

@@ -69,8 +69,8 @@ jobs:
         uses: ./base-action
         with:
           prompt: |
-            Use Bash to echo "This should not work"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY && secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_CREDENTIALS }}
+            Run the command `echo $HOME` to check the home directory path
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_CREDENTIALS }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CREDENTIALS }}
           settings: |
             {
@@ -169,8 +169,8 @@ jobs:
         uses: ./base-action
         with:
           prompt: |
-            Use Bash to echo "This should not work from file"
-          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY && secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_CREDENTIALS }}
+            Run the command `echo $HOME` to check the home directory path
+          anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY || secrets.CLAUDE_CREDENTIALS }}
           claude_code_oauth_token: ${{ secrets.CLAUDE_CREDENTIALS }}
           settings: "test-settings.json"
           timeout_minutes: "2"

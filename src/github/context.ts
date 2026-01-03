@@ -43,6 +43,9 @@ export type ParsedGitHubContext = {
     useStickyComment: boolean;
     additionalPermissions: Map<string, string>;
     useCommitSigning: boolean;
+    sshSigningKey: string;
+    trackProgress: boolean;
+    includeFixLinks: boolean;
   };
 };
 
@@ -81,6 +84,9 @@ export function parseGitHubContext(): ParsedGitHubContext {
         process.env.ADDITIONAL_PERMISSIONS ?? "",
       ),
       useCommitSigning: process.env.USE_COMMIT_SIGNING === "true",
+      sshSigningKey: process.env.SSH_SIGNING_KEY || "",
+      trackProgress: process.env.TRACK_PROGRESS === "true",
+      includeFixLinks: process.env.INCLUDE_FIX_LINKS === "true",
     },
   };
 
